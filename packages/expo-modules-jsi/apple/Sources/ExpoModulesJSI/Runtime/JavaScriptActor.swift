@@ -93,36 +93,28 @@ internal class JavaScriptExecutor: SerialExecutor, @unchecked Sendable {
   }
 }
 
-/// An actor that is dedicated for the specific runtime.
-internal actor JavaScriptRuntimeActor {
-  private weak let runtime: JavaScriptRuntime?
-  nonisolated private let executor: JavaScriptExecutor
-
-  init(runtime: JavaScriptRuntime) {
-    self.runtime = runtime
-    self.executor = JavaScriptRuntimeExecutor(runtime: runtime)
-  }
-
-  nonisolated var unownedExecutor: UnownedSerialExecutor {
-    return executor.asUnownedSerialExecutor()
-  }
-
-  func execute<R: Sendable>(_ operation: @escaping @JavaScriptActor () async throws -> R) async rethrows -> sending R {
-    return try await operation()
-  }
-}
-
-/// Serial executor dedicated for the specific runtime.
-internal final class JavaScriptRuntimeExecutor: JavaScriptExecutor, @unchecked Sendable {
+/// Task executor dedicated to a specific JavaScript runtime.
+///
+/// Unlike ``JavaScriptExecutor``, which only provides actor isolation and runs jobs inline,
+/// this executor routes every job through the runtime scheduler. Using it as a task's executor
+/// preference makes that task re-enter through the runtime's JavaScript thread after suspension
+/// points.
+internal final class JavaScriptRuntimeTaskExecutor: TaskExecutor, @unchecked Sendable {
   private weak let runtime: JavaScriptRuntime?
 
   init(runtime: JavaScriptRuntime) {
     self.runtime = runtime
   }
 
-  override func enqueue(_ job: UnownedJob) {
-    runtime?.schedule(priority: .immediate) {
-      job.runSynchronously(on: self.asUnownedSerialExecutor())
+  // MARK: - TaskExecutor
+
+  func enqueue(_ job: UnownedJob) {
+    runtime?.runOrSchedule(priority: .immediate) {
+      if #available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *) {
+        job.runSynchronously(on: self.asUnownedTaskExecutor())
+      } else {
+        job.runSynchronously(on: JavaScriptActor.shared.unownedExecutor)
+      }
     }
   }
 }
